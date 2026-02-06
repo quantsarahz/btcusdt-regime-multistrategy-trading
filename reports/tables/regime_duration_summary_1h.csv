@@ -1,0 +1,5 @@
+regime,n_segments,mean_length,median_length,p25,p75,max_length
+Down_HighVol,393,21.62849872773537,14.0,7.0,28.0,128
+Down_LowVol,457,18.689277899343544,13.0,7.0,25.0,134
+Up_HighVol,431,17.8538283062645,12.0,6.0,22.0,104
+Up_LowVol,498,20.632530120481928,15.0,8.0,28.0,133
