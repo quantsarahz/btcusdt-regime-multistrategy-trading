@@ -1,0 +1,23 @@
+venue:
+  exchange: binance
+  market_type: spot
+  symbol: BTCUSDT
+
+time_range:
+  start: "2022-01-01"
+  end: "2025-12-31"
+  timezone: "UTC"
+
+frequencies:
+  - "1h"
+
+storage:
+  raw_dir: "data/raw"
+  processed_dir: "data/processed"
+  format: "parquet"
+  partition_by: ["year"]
+
+binance_api:
+  base_url: "https://api.binance.com"
+  klines_limit: 1000
+  rate_limit_sleep_sec: 0.2
