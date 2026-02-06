@@ -1,0 +1,2 @@
+n_rows,start_ts,end_ts,missing_count,missing_gaps_count,duplicate_count,ohlc_high_violation,ohlc_low_violation,ohlc_high_low_violation,non_positive_ohlc_count,negative_volume_count,return_outlier_count
+35040,2022-01-01T00:00:00+00:00,2025-12-31T00:00:00+00:00,1,1,0,0,0,0,0,0,0
