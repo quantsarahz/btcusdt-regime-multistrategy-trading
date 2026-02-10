@@ -9,6 +9,7 @@ import yaml
 from bt_regime_system.data.build_bars import run_build_bars
 from bt_regime_system.data.fetch_1m import fetch_1m_klines, write_monthly_raw_1m
 from bt_regime_system.data.qc_1m import run_qc_1m
+from bt_regime_system.data.qc_bars import run_qc_bars
 from bt_regime_system.utils.logging import get_logger
 
 app = typer.Typer(help="BTCUSDT regime trading system CLI")
@@ -118,6 +119,45 @@ def build_bars_cmd(
     logger.info("Built 1h rows: %d", summary["rows_1h"])
     logger.info("15m files written: %d", len(summary["files_15m"]))
     logger.info("1h files written: %d", len(summary["files_1h"]))
+
+
+@app.command("qc-bars")
+def qc_bars_cmd(
+    bars_15m_path: Optional[Path] = typer.Option(None, help="15m bars parquet folder or file"),
+    bars_1h_path: Optional[Path] = typer.Option(None, help="1h bars parquet folder or file"),
+    report_dir: Optional[Path] = typer.Option(None, help="QC report output folder"),
+    config: Path = typer.Option(Path("configs/default.yaml"), help="Default config path"),
+) -> None:
+    """Run QC checks for 15m and 1h bars and write reports."""
+    cfg = _read_yaml(config)
+    _, cfg_paths = _config_data(cfg)
+
+    resolved_15m_path = bars_15m_path or Path(cfg_paths.get("bars_15m", "data/bars_15m"))
+    resolved_1h_path = bars_1h_path or Path(cfg_paths.get("bars_1h", "data/bars_1h"))
+    resolved_report_dir = report_dir or Path(cfg_paths.get("reports", "data/reports"))
+
+    result_15m = run_qc_bars(input_path=resolved_15m_path, freq="15m", report_dir=resolved_report_dir)
+    result_1h = run_qc_bars(input_path=resolved_1h_path, freq="1h", report_dir=resolved_report_dir)
+
+    logger.info(
+        "QC bars %s: files=%d rows=%d global_dup=%d global_missing=%d",
+        result_15m["frequency"],
+        result_15m["summary"]["files_processed"],
+        result_15m["summary"]["row_count"],
+        result_15m["summary"]["global_duplicate_timestamp_count"],
+        result_15m["summary"]["global_missing_timestamp_count"],
+    )
+    logger.info("Summary report: %s", result_15m["summary_path"])
+
+    logger.info(
+        "QC bars %s: files=%d rows=%d global_dup=%d global_missing=%d",
+        result_1h["frequency"],
+        result_1h["summary"]["files_processed"],
+        result_1h["summary"]["row_count"],
+        result_1h["summary"]["global_duplicate_timestamp_count"],
+        result_1h["summary"]["global_missing_timestamp_count"],
+    )
+    logger.info("Summary report: %s", result_1h["summary_path"])
 
 
 if __name__ == "__main__":
