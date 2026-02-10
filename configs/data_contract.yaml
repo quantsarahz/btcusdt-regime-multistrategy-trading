@@ -18,6 +18,8 @@ storage:
     clean_1m: "BTCUSDT_1m_clean_YYYY-MM.parquet"
     bars_15m: "BTCUSDT_15m_YYYY-MM.parquet"
     bars_1h: "BTCUSDT_1h_YYYY-MM.parquet"
+    regime_1h: "BTCUSDT_regime_1h_YYYY-MM.parquet"
+    regime_15m: "BTCUSDT_regime_15m_YYYY-MM.parquet"
     qc_report: "qc_{dataset}_YYYY-MM.json"
 
 paths:
@@ -26,6 +28,7 @@ paths:
   bars_15m: data/bars_15m
   bars_1h: data/bars_1h
   reports: data/reports
+  regime: results/regime
 
 timestamp:
   field: timestamp
@@ -117,11 +120,49 @@ schemas:
         close: last
         volume: sum
 
+  regime_1h:
+    required_columns:
+      timestamp: "datetime64[ns, UTC]"
+      regime: "string"
+      is_trend: "bool"
+      is_high_vol: "bool"
+      ema_fast: "float64"
+      ema_slow: "float64"
+      adx: "float64"
+      atrp: "float64"
+      vol_threshold: "float64"
+    labels: ["R1", "R2", "R3", "R4"]
+
+  regime_15m:
+    required_columns:
+      timestamp: "datetime64[ns, UTC]"
+      regime: "string"
+      regime_timestamp: "datetime64[ns, UTC]"
+    labels: ["R1", "R2", "R3", "R4"]
+
 alignment:
   regime_input: bars_1h
   strategy_input: bars_15m
   mapping_1h_to_15m: "forward_fill_last_completed_1h_regime"
   anti_lookahead_rule: "never use in-progress 1h bar to label current 15m bar"
+
+allocator_mapping:
+  R1:
+    donchian: 0.6
+    ema_adx: 0.4
+    mean_reversion: 0.0
+  R2:
+    donchian: 0.4
+    ema_adx: 0.4
+    mean_reversion: 0.0
+  R3:
+    donchian: 0.0
+    ema_adx: 0.0
+    mean_reversion: 1.0
+  R4:
+    donchian: 0.0
+    ema_adx: 0.0
+    mean_reversion: 0.0
 
 quality_report:
   required_metrics:

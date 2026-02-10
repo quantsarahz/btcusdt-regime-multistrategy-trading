@@ -10,6 +10,8 @@ from bt_regime_system.data.build_bars import run_build_bars
 from bt_regime_system.data.fetch_1m import fetch_1m_klines, write_monthly_raw_1m
 from bt_regime_system.data.qc_1m import run_qc_1m
 from bt_regime_system.data.qc_bars import run_qc_bars
+from bt_regime_system.regime.align import run_align_regime
+from bt_regime_system.regime.detect import run_detect_regime
 from bt_regime_system.utils.logging import get_logger
 
 app = typer.Typer(help="BTCUSDT regime trading system CLI")
@@ -30,6 +32,14 @@ def _config_data(cfg: dict) -> tuple[dict, dict]:
     cfg_data = cfg.get("data", {}) if isinstance(cfg.get("data"), dict) else {}
     cfg_paths = cfg_data.get("paths", {}) if isinstance(cfg_data.get("paths"), dict) else {}
     return cfg_data, cfg_paths
+
+
+def _config_regime(cfg: dict) -> tuple[dict, dict, dict]:
+    regime = cfg.get("regime", {}) if isinstance(cfg.get("regime"), dict) else {}
+    trend = regime.get("trend", {}) if isinstance(regime.get("trend"), dict) else {}
+    volatility = regime.get("volatility", {}) if isinstance(regime.get("volatility"), dict) else {}
+    output = regime.get("output", {}) if isinstance(regime.get("output"), dict) else {}
+    return trend, volatility, output
 
 
 @app.command("fetch-1m")
@@ -158,6 +168,76 @@ def qc_bars_cmd(
         result_1h["summary"]["global_missing_timestamp_count"],
     )
     logger.info("Summary report: %s", result_1h["summary_path"])
+
+
+@app.command("detect-regime")
+def detect_regime_cmd(
+    input_path: Optional[Path] = typer.Option(None, help="1h bars parquet folder or file"),
+    output_dir: Optional[Path] = typer.Option(None, help="Regime 1h output folder"),
+    symbol: Optional[str] = typer.Option(None, help="Trading symbol, defaults to config value"),
+    config: Path = typer.Option(Path("configs/default.yaml"), help="Default config path"),
+) -> None:
+    """Detect 1h regime labels (R1-R4) from 1h bars and write monthly outputs."""
+    cfg = _read_yaml(config)
+    cfg_data, cfg_paths = _config_data(cfg)
+    trend_cfg, vol_cfg, out_cfg = _config_regime(cfg)
+
+    resolved_symbol = symbol or cfg_data.get("symbol") or "BTCUSDT"
+    resolved_input_path = input_path or Path(cfg_paths.get("bars_1h", "data/bars_1h"))
+    resolved_output_dir = output_dir or Path(out_cfg.get("dir_1h", "results/regime"))
+
+    summary = run_detect_regime(
+        input_path=resolved_input_path,
+        output_dir=resolved_output_dir,
+        symbol=resolved_symbol,
+        ema_fast=int(trend_cfg.get("ema_fast", 24)),
+        ema_slow=int(trend_cfg.get("ema_slow", 96)),
+        adx_window=int(trend_cfg.get("adx_window", 14)),
+        adx_threshold=float(trend_cfg.get("adx_threshold", 20.0)),
+        ema_gap_threshold=float(trend_cfg.get("ema_gap_threshold", 0.0)),
+        atr_window=int(vol_cfg.get("atr_window", 14)),
+        vol_lookback=int(vol_cfg.get("quantile_lookback", 720)),
+        high_vol_quantile=float(vol_cfg.get("high_vol_quantile", 0.75)),
+    )
+
+    logger.info("Regime detect rows in: %d", summary["rows_in"])
+    logger.info("Regime detect rows out: %d", summary["rows_out"])
+    logger.info("Regime files written: %d", len(summary["files_written"]))
+    logger.info("Regime counts: %s", summary["regime_counts"])
+
+
+@app.command("align-regime")
+def align_regime_cmd(
+    regime_1h_path: Optional[Path] = typer.Option(None, help="Regime 1h parquet folder or file"),
+    bars_15m_path: Optional[Path] = typer.Option(None, help="15m bars parquet folder or file"),
+    output_dir: Optional[Path] = typer.Option(None, help="Aligned 15m regime output folder"),
+    symbol: Optional[str] = typer.Option(None, help="Trading symbol, defaults to config value"),
+    default_regime: Optional[str] = typer.Option(None, help="Fallback regime before first available 1h label"),
+    config: Path = typer.Option(Path("configs/default.yaml"), help="Default config path"),
+) -> None:
+    """Align completed 1h regime labels to 15m timeline without lookahead."""
+    cfg = _read_yaml(config)
+    cfg_data, cfg_paths = _config_data(cfg)
+    _, _, out_cfg = _config_regime(cfg)
+
+    resolved_symbol = symbol or cfg_data.get("symbol") or "BTCUSDT"
+    resolved_regime_1h_path = regime_1h_path or Path(out_cfg.get("dir_1h", "results/regime"))
+    resolved_bars_15m_path = bars_15m_path or Path(cfg_paths.get("bars_15m", "data/bars_15m"))
+    resolved_output_dir = output_dir or Path(out_cfg.get("dir_15m", "results/regime"))
+    resolved_default_regime = default_regime or str(out_cfg.get("default_regime_15m", "R4"))
+
+    summary = run_align_regime(
+        regime_1h_path=resolved_regime_1h_path,
+        bars_15m_path=resolved_bars_15m_path,
+        output_dir=resolved_output_dir,
+        symbol=resolved_symbol,
+        default_regime=resolved_default_regime,
+    )
+
+    logger.info("Align regime rows 1h: %d", summary["rows_regime_1h"])
+    logger.info("Align regime rows 15m bars: %d", summary["rows_bars_15m"])
+    logger.info("Align regime rows out: %d", summary["rows_aligned"])
+    logger.info("Aligned regime files written: %d", len(summary["files_written"]))
 
 
 if __name__ == "__main__":

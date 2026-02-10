@@ -56,3 +56,46 @@ alignment:
   strategy_frame: "15m"
   mapping_1h_to_15m: forward_fill_last_completed_1h_regime
   anti_lookahead: true
+
+regime:
+  labels:
+    R1: "Trend + LowVol"
+    R2: "Trend + HighVol"
+    R3: "Range + LowVol"
+    R4: "Range + HighVol"
+
+  trend:
+    ema_fast: 24
+    ema_slow: 96
+    adx_window: 14
+    adx_threshold: 20.0
+    ema_gap_threshold: 0.0
+
+  volatility:
+    atr_window: 14
+    quantile_lookback: 720
+    high_vol_quantile: 0.75
+
+  output:
+    dir_1h: results/regime
+    dir_15m: results/regime
+    default_regime_15m: R4
+
+allocator:
+  strategy_weights:
+    R1:
+      donchian: 0.6
+      ema_adx: 0.4
+      mean_reversion: 0.0
+    R2:
+      donchian: 0.4
+      ema_adx: 0.4
+      mean_reversion: 0.0
+    R3:
+      donchian: 0.0
+      ema_adx: 0.0
+      mean_reversion: 1.0
+    R4:
+      donchian: 0.0
+      ema_adx: 0.0
+      mean_reversion: 0.0
