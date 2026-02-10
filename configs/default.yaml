@@ -1,0 +1,58 @@
+project:
+  name: btcusdt-regime-multistrategy-trading
+  contract_version: "1.0.0"
+
+data:
+  symbol: BTCUSDT
+  venue: binance_spot
+  timezone: UTC
+  source_frequency: "1m"
+  derived_frequencies: ["15m", "1h"]
+
+  paths:
+    raw_1m: data/raw_1m
+    clean_1m: data/clean_1m
+    bars_15m: data/bars_15m
+    bars_1h: data/bars_1h
+    reports: data/reports
+
+  storage:
+    format: parquet
+    compression: snappy
+    naming_mode: monthly_file
+
+  timestamp:
+    field: timestamp
+    convention: bar_close_time
+    interval_semantics: "(t-delta, t]"
+    timezone: UTC
+
+qc:
+  require_unique_timestamp: true
+  require_monotonic_timestamp: true
+  enforce_positive_prices: true
+  enforce_non_negative_volume: true
+  fill_missing_1m: true
+  fill_rule:
+    open: previous_close
+    high: previous_close
+    low: previous_close
+    close: previous_close
+    volume: 0.0
+    is_synthetic: 1
+
+aggregation:
+  resample_closed: right
+  resample_label: right
+  ohlcv:
+    open: first
+    high: max
+    low: min
+    close: last
+    volume: sum
+
+alignment:
+  regime_frame: "1h"
+  strategy_frame: "15m"
+  mapping_1h_to_15m: forward_fill_last_completed_1h_regime
+  anti_lookahead: true

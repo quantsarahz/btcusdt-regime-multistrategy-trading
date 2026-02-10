@@ -1,0 +1,135 @@
+version: "1.0.0"
+owner: "bt_regime_system"
+
+scope:
+  symbol: BTCUSDT
+  venue: binance_spot
+  timezone: UTC
+  trading_calendar: "24x7"
+  source_frequency: "1m"
+  derived_frequencies: ["15m", "1h"]
+
+storage:
+  format: parquet
+  compression: snappy
+  partitioning: "monthly_file"
+  naming:
+    raw_1m: "BTCUSDT_1m_YYYY-MM.parquet"
+    clean_1m: "BTCUSDT_1m_clean_YYYY-MM.parquet"
+    bars_15m: "BTCUSDT_15m_YYYY-MM.parquet"
+    bars_1h: "BTCUSDT_1h_YYYY-MM.parquet"
+    qc_report: "qc_{dataset}_YYYY-MM.json"
+
+paths:
+  raw_1m: data/raw_1m
+  clean_1m: data/clean_1m
+  bars_15m: data/bars_15m
+  bars_1h: data/bars_1h
+  reports: data/reports
+
+timestamp:
+  field: timestamp
+  dtype: "datetime64[ns, UTC]"
+  convention: "bar_close_time"
+  interval_semantics: "(t-delta, t]"
+  unique: true
+  monotonic_increasing: true
+
+schemas:
+  raw_1m:
+    required_columns:
+      timestamp: "datetime64[ns, UTC]"
+      open: "float64"
+      high: "float64"
+      low: "float64"
+      close: "float64"
+      volume: "float64"
+    constraints:
+      - "open > 0"
+      - "high > 0"
+      - "low > 0"
+      - "close > 0"
+      - "volume >= 0"
+      - "high >= max(open, close, low)"
+      - "low <= min(open, close, high)"
+      - "no duplicate timestamp"
+
+  clean_1m:
+    required_columns:
+      timestamp: "datetime64[ns, UTC]"
+      open: "float64"
+      high: "float64"
+      low: "float64"
+      close: "float64"
+      volume: "float64"
+      is_synthetic: "int8"
+    constraints:
+      - "same OHLCV rules as raw_1m"
+      - "no missing OHLCV values"
+      - "is_synthetic in {0, 1}"
+      - "continuous 1-minute timeline between min(timestamp) and max(timestamp)"
+    gap_fill_policy:
+      missing_minute:
+        open: "previous_close"
+        high: "previous_close"
+        low: "previous_close"
+        close: "previous_close"
+        volume: 0.0
+        is_synthetic: 1
+
+  bars_15m:
+    required_columns:
+      timestamp: "datetime64[ns, UTC]"
+      open: "float64"
+      high: "float64"
+      low: "float64"
+      close: "float64"
+      volume: "float64"
+    build_rule:
+      source: clean_1m
+      frequency: "15m"
+      resample_closed: right
+      resample_label: right
+      aggregation:
+        open: first
+        high: max
+        low: min
+        close: last
+        volume: sum
+
+  bars_1h:
+    required_columns:
+      timestamp: "datetime64[ns, UTC]"
+      open: "float64"
+      high: "float64"
+      low: "float64"
+      close: "float64"
+      volume: "float64"
+    build_rule:
+      source: clean_1m
+      frequency: "1h"
+      resample_closed: right
+      resample_label: right
+      aggregation:
+        open: first
+        high: max
+        low: min
+        close: last
+        volume: sum
+
+alignment:
+  regime_input: bars_1h
+  strategy_input: bars_15m
+  mapping_1h_to_15m: "forward_fill_last_completed_1h_regime"
+  anti_lookahead_rule: "never use in-progress 1h bar to label current 15m bar"
+
+quality_report:
+  required_metrics:
+    - "row_count"
+    - "min_timestamp"
+    - "max_timestamp"
+    - "duplicate_timestamp_count"
+    - "missing_timestamp_count"
+    - "nan_count_by_column"
+    - "invalid_ohlc_count"
+    - "negative_volume_count"
