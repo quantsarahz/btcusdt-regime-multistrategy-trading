@@ -1,0 +1,30 @@
+# Python cache and local env
+__pycache__/
+*.py[cod]
+.pytest_cache/
+.venv/
+venv/
+
+# OS
+.DS_Store
+
+# Data and result artifacts (keep .gitkeep)
+data/raw_1m/*
+!data/raw_1m/.gitkeep
+data/clean_1m/*
+!data/clean_1m/.gitkeep
+data/bars_15m/*
+!data/bars_15m/.gitkeep
+data/bars_1h/*
+!data/bars_1h/.gitkeep
+data/reports/*
+!data/reports/.gitkeep
+
+results/signals/*
+!results/signals/.gitkeep
+results/regime/*
+!results/regime/.gitkeep
+results/backtest/*
+!results/backtest/.gitkeep
+results/metrics/*
+!results/metrics/.gitkeep
