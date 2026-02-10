@@ -1,0 +1,38 @@
+# Python
+__pycache__/
+*.py[cod]
+*.so
+.venv/
+venv/
+.env
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+
+# Jupyter
+.ipynb_checkpoints/
+
+# OS
+.DS_Store
+
+# Data artifacts (keep folder placeholders)
+data/raw_1m/*
+!data/raw_1m/.gitkeep
+data/clean_1m/*
+!data/clean_1m/.gitkeep
+data/bars_15m/*
+!data/bars_15m/.gitkeep
+data/bars_1h/*
+!data/bars_1h/.gitkeep
+data/reports/*
+!data/reports/.gitkeep
+
+# Result artifacts (keep folder placeholders)
+results/signals/*
+!results/signals/.gitkeep
+results/regime/*
+!results/regime/.gitkeep
+results/backtest/*
+!results/backtest/.gitkeep
+results/metrics/*
+!results/metrics/.gitkeep
