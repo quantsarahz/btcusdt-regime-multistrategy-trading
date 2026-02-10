@@ -6,6 +6,7 @@ from typing import Optional
 import typer
 import yaml
 
+from bt_regime_system.data.build_bars import run_build_bars
 from bt_regime_system.data.fetch_1m import fetch_1m_klines, write_monthly_raw_1m
 from bt_regime_system.data.qc_1m import run_qc_1m
 from bt_regime_system.utils.logging import get_logger
@@ -87,6 +88,36 @@ def qc_1m_cmd(
             item["rows_out"],
         )
         logger.info("Report: %s", item["report_file"])
+
+
+@app.command("build-bars")
+def build_bars_cmd(
+    input_path: Path = typer.Option(Path("data/clean_1m"), help="Clean 1m parquet file or folder"),
+    output_15m_dir: Optional[Path] = typer.Option(None, help="15m bars output folder"),
+    output_1h_dir: Optional[Path] = typer.Option(None, help="1h bars output folder"),
+    symbol: Optional[str] = typer.Option(None, help="Trading symbol, defaults to config value"),
+    config: Path = typer.Option(Path("configs/default.yaml"), help="Default config path"),
+) -> None:
+    """Build 15m and 1h bars from clean 1m parquet data."""
+    cfg = _read_yaml(config)
+    cfg_data, cfg_paths = _config_data(cfg)
+
+    resolved_symbol = symbol or cfg_data.get("symbol") or "BTCUSDT"
+    resolved_15m_dir = output_15m_dir or Path(cfg_paths.get("bars_15m", "data/bars_15m"))
+    resolved_1h_dir = output_1h_dir or Path(cfg_paths.get("bars_1h", "data/bars_1h"))
+
+    summary = run_build_bars(
+        input_path=input_path,
+        output_15m_dir=resolved_15m_dir,
+        output_1h_dir=resolved_1h_dir,
+        symbol=resolved_symbol,
+    )
+
+    logger.info("Build bars rows in: %d", summary["rows_in"])
+    logger.info("Built 15m rows: %d", summary["rows_15m"])
+    logger.info("Built 1h rows: %d", summary["rows_1h"])
+    logger.info("15m files written: %d", len(summary["files_15m"]))
+    logger.info("1h files written: %d", len(summary["files_1h"]))
 
 
 if __name__ == "__main__":
