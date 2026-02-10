@@ -32,8 +32,8 @@ def _config_data(cfg: dict) -> tuple[dict, dict]:
 
 @app.command("fetch-1m")
 def fetch_1m_cmd(
-    start: str = typer.Option(..., help="UTC start close-time, e.g. 2024-01-01T00:01:00Z"),
-    end: str = typer.Option(..., help="UTC end close-time, e.g. 2024-01-31T23:59:00Z"),
+    start: str = typer.Option("2022-01-01T00:01:00Z", help="UTC start close-time, default 2022-01-01T00:01:00Z"),
+    end: str = typer.Option("2025-12-31T23:59:00Z", help="UTC end close-time, default 2025-12-31T23:59:00Z"),
     symbol: Optional[str] = typer.Option(None, help="Trading symbol, defaults to config value"),
     out_dir: Optional[Path] = typer.Option(None, help="Output directory for raw monthly parquet"),
     config: Path = typer.Option(Path("configs/default.yaml"), help="Default config path"),
