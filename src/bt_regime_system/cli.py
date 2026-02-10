@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from pathlib import Path
+from typing import Optional
 
 import typer
 import yaml
@@ -33,8 +34,8 @@ def _config_data(cfg: dict) -> tuple[dict, dict]:
 def fetch_1m_cmd(
     start: str = typer.Option(..., help="UTC start close-time, e.g. 2024-01-01T00:01:00Z"),
     end: str = typer.Option(..., help="UTC end close-time, e.g. 2024-01-31T23:59:00Z"),
-    symbol: str | None = typer.Option(None, help="Trading symbol, defaults to config value"),
-    out_dir: Path | None = typer.Option(None, help="Output directory for raw monthly parquet"),
+    symbol: Optional[str] = typer.Option(None, help="Trading symbol, defaults to config value"),
+    out_dir: Optional[Path] = typer.Option(None, help="Output directory for raw monthly parquet"),
     config: Path = typer.Option(Path("configs/default.yaml"), help="Default config path"),
 ) -> None:
     """Download 1m bars and write monthly raw parquet files."""
@@ -57,8 +58,8 @@ def fetch_1m_cmd(
 @app.command("qc-1m")
 def qc_1m_cmd(
     input_path: Path = typer.Option(Path("data/raw_1m"), help="Raw 1m parquet file or folder"),
-    output_dir: Path | None = typer.Option(None, help="Clean 1m output folder"),
-    report_dir: Path | None = typer.Option(None, help="QC report output folder"),
+    output_dir: Optional[Path] = typer.Option(None, help="Clean 1m output folder"),
+    report_dir: Optional[Path] = typer.Option(None, help="QC report output folder"),
     fill_missing: bool = typer.Option(True, help="Fill missing 1m rows with previous close policy"),
     config: Path = typer.Option(Path("configs/default.yaml"), help="Default config path"),
 ) -> None:
