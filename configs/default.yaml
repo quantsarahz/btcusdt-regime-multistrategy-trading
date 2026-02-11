@@ -16,6 +16,8 @@ data:
     bars_1h: data/bars_1h
     reports: data/reports
     signals: results/signals
+    backtest: results/backtest
+    metrics: results/metrics
 
   storage:
     format: parquet
@@ -77,9 +79,13 @@ regime:
     quantile_lookback: 720
     high_vol_quantile: 0.75
 
+  smoothing:
+    min_regime_run_bars: 3
+
   output:
     dir_1h: results/regime
     dir_15m: results/regime
+    dir_plots: results/regime/plots
     default_regime_15m: R4
 
 allocator:
@@ -106,6 +112,11 @@ signals:
   output:
     dir_15m: results/signals
 
+  execution:
+    long_only: true
+    min_hold_bars: 168
+    rebalance_threshold: 0.2
+
   donchian:
     window: 20
     hold_until_opposite: true
@@ -121,3 +132,19 @@ signals:
     z_window: 48
     entry_z: 1.5
     exit_z: 0.5
+
+
+backtest:
+  output:
+    dir_backtest: results/backtest
+    dir_metrics: results/metrics
+
+  execution:
+    initial_equity: 100000.0
+    fee_bps: 4.0
+    slippage_bps: 1.0
+    long_only: true
+
+  assumptions:
+    position_lag_bars: 1
+    bars_per_year_15m: 35040

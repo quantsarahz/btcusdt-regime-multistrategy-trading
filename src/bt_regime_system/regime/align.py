@@ -108,7 +108,7 @@ def write_monthly_regime_15m(
             existing["timestamp"] = pd.to_datetime(existing["timestamp"], utc=True)
             existing["regime_timestamp"] = pd.to_datetime(existing["regime_timestamp"], utc=True, errors="coerce")
             merged = pd.concat([existing, new_rows], ignore_index=True)
-            merged = merged.sort_values("timestamp").drop_duplicates("timestamp", keep="last")
+            merged = merged.sort_values("timestamp", kind="mergesort").drop_duplicates("timestamp", keep="last")
         else:
             merged = new_rows.drop_duplicates("timestamp", keep="last")
 

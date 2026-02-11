@@ -97,6 +97,83 @@ def test_build_signals_15m_missing_regime_defaults_to_r4(monkeypatch) -> None:
     assert out["target_position"].tolist() == [0.0, 1.0]
 
 
+def test_build_signals_15m_execution_constraints_applied(monkeypatch) -> None:
+    bars = _make_bars("2024-01-01T00:15:00Z", periods=6)
+    regime = pd.DataFrame(
+        {
+            "timestamp": bars["timestamp"],
+            "regime": [R1] * 6,
+        }
+    )
+
+    monkeypatch.setattr(
+        mod,
+        "generate_donchian_signal",
+        lambda bars_15m, **kwargs: pd.DataFrame(
+            {"timestamp": bars_15m["timestamp"], mod.DONCHIAN_COL: [0.0, 1.0, 1.0, 1.0, 0.0, 0.0]}
+        ),
+    )
+    monkeypatch.setattr(
+        mod,
+        "generate_ema_adx_signal",
+        lambda bars_15m, **kwargs: pd.DataFrame(
+            {"timestamp": bars_15m["timestamp"], mod.EMA_ADX_COL: [0.0, 0.0, 1.0, 1.0, 0.0, 0.0]}
+        ),
+    )
+    monkeypatch.setattr(
+        mod,
+        "generate_mean_reversion_signal",
+        lambda bars_15m, **kwargs: pd.DataFrame(
+            {"timestamp": bars_15m["timestamp"], mod.MEAN_REV_COL: [0.0, 0.0, 0.0, 0.0, 0.0, 0.0]}
+        ),
+    )
+
+    out = mod.build_signals_15m(
+        bars_15m=bars,
+        regime_15m=regime,
+        long_only=True,
+        min_hold_bars=3,
+        rebalance_threshold=0.25,
+    )
+
+    assert out["signal_composite"].tolist() == [0.0, 0.6, 1.0, 1.0, 0.0, 0.0]
+    assert out["target_position"].tolist() == [0.0, 0.6, 0.6, 0.6, 0.0, 0.0]
+
+
+def test_build_signals_15m_long_only_clips_negative_targets(monkeypatch) -> None:
+    bars = _make_bars("2024-01-01T00:15:00Z", periods=3)
+    regime = pd.DataFrame(
+        {
+            "timestamp": bars["timestamp"],
+            "regime": [R3, R3, R3],
+        }
+    )
+
+    monkeypatch.setattr(
+        mod,
+        "generate_donchian_signal",
+        lambda bars_15m, **kwargs: pd.DataFrame({"timestamp": bars_15m["timestamp"], mod.DONCHIAN_COL: [0.0, 0.0, 0.0]}),
+    )
+    monkeypatch.setattr(
+        mod,
+        "generate_ema_adx_signal",
+        lambda bars_15m, **kwargs: pd.DataFrame({"timestamp": bars_15m["timestamp"], mod.EMA_ADX_COL: [0.0, 0.0, 0.0]}),
+    )
+    monkeypatch.setattr(
+        mod,
+        "generate_mean_reversion_signal",
+        lambda bars_15m, **kwargs: pd.DataFrame({"timestamp": bars_15m["timestamp"], mod.MEAN_REV_COL: [-1.0, -1.0, -1.0]}),
+    )
+
+    out = mod.build_signals_15m(
+        bars_15m=bars,
+        regime_15m=regime,
+        long_only=True,
+    )
+    assert out["signal_composite"].tolist() == [-1.0, -1.0, -1.0]
+    assert out["target_position"].tolist() == [0.0, 0.0, 0.0]
+
+
 def test_run_generate_signals_writes_monthly_outputs(tmp_path, monkeypatch) -> None:
     bars_dir = tmp_path / "bars"
     regime_dir = tmp_path / "regime"
@@ -141,6 +218,9 @@ def test_run_generate_signals_writes_monthly_outputs(tmp_path, monkeypatch) -> N
     assert result["rows_bars_15m"] == 3
     assert result["rows_regime_15m"] == 3
     assert result["rows_out"] == 3
+    assert result["long_only"] is False
+    assert result["min_hold_bars"] == 1
+    assert result["rebalance_threshold"] == 0.0
 
     files = sorted(out_dir.glob("BTCUSDT_signals_15m_2024-*.parquet"))
     assert len(files) == 2

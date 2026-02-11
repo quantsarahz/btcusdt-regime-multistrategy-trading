@@ -49,6 +49,47 @@ def classify_regime(is_trend: pd.Series, is_high_vol: pd.Series) -> pd.Series:
     return regime
 
 
+def apply_min_regime_run_filter(
+    regime: pd.Series,
+    min_run_bars: int = 1,
+    default_regime: str = R4,
+) -> pd.Series:
+    """Confirm regime switch only after `min_run_bars` consecutive new labels."""
+    if min_run_bars < 1:
+        raise ValueError("min_run_bars must be >= 1")
+
+    out = regime.fillna(default_regime).astype("string")
+    if out.empty or min_run_bars == 1:
+        return out
+
+    values = out.astype(str).tolist()
+    filtered: list[str] = []
+
+    current = values[0]
+    pending: str | None = None
+    pending_count = 0
+
+    for value in values:
+        if value == current:
+            pending = None
+            pending_count = 0
+        else:
+            if pending != value:
+                pending = value
+                pending_count = 1
+            else:
+                pending_count += 1
+
+            if pending_count >= min_run_bars:
+                current = pending
+                pending = None
+                pending_count = 0
+
+        filtered.append(current)
+
+    return pd.Series(filtered, index=out.index, dtype="string")
+
+
 def detect_regime_1h(
     bars_1h: pd.DataFrame,
     ema_fast: int = 24,
@@ -59,6 +100,7 @@ def detect_regime_1h(
     atr_window: int = 14,
     vol_lookback: int = 720,
     high_vol_quantile: float = 0.75,
+    min_regime_run_bars: int = 1,
 ) -> pd.DataFrame:
     standardized = _standardize_bars_1h(bars_1h)
     if standardized.empty:
@@ -88,7 +130,17 @@ def detect_regime_1h(
         high_vol_quantile=high_vol_quantile,
     )
 
-    features["regime"] = classify_regime(features["is_trend"], features["is_high_vol"])
+    regime_raw = classify_regime(features["is_trend"], features["is_high_vol"])
+    features["regime"] = apply_min_regime_run_filter(
+        regime_raw,
+        min_run_bars=min_regime_run_bars,
+        default_regime=R4,
+    )
+
+    # Keep derived boolean flags consistent with final smoothed regime labels.
+    features["is_trend"] = features["regime"].isin([R1, R2])
+    features["is_high_vol"] = features["regime"].isin([R2, R4])
+
     return features[
         [
             "timestamp",
@@ -147,7 +199,7 @@ def write_monthly_regime(
             existing = pd.read_parquet(target)
             existing["timestamp"] = pd.to_datetime(existing["timestamp"], utc=True)
             merged = pd.concat([existing, new_rows], ignore_index=True)
-            merged = merged.sort_values("timestamp").drop_duplicates("timestamp", keep="last")
+            merged = merged.sort_values("timestamp", kind="mergesort").drop_duplicates("timestamp", keep="last")
         else:
             merged = new_rows.drop_duplicates("timestamp", keep="last")
 
@@ -177,6 +229,7 @@ def run_detect_regime(
     atr_window: int = 14,
     vol_lookback: int = 720,
     high_vol_quantile: float = 0.75,
+    min_regime_run_bars: int = 1,
 ) -> dict[str, Any]:
     files = _collect_1h_files(input_path, symbol=symbol)
     if not files:
@@ -185,6 +238,8 @@ def run_detect_regime(
             "rows_out": 0,
             "files_written": [],
             "regime_counts": {R1: 0, R2: 0, R3: 0, R4: 0},
+            "min_regime_run_bars": int(min_regime_run_bars),
+            "switch_count": 0,
         }
 
     rows_in = 0
@@ -205,10 +260,12 @@ def run_detect_regime(
         atr_window=atr_window,
         vol_lookback=vol_lookback,
         high_vol_quantile=high_vol_quantile,
+        min_regime_run_bars=min_regime_run_bars,
     )
 
     files_written = write_monthly_regime(regime_1h, out_dir=output_dir, symbol=symbol, frame="1h")
     regime_counts = regime_1h["regime"].value_counts().to_dict() if not regime_1h.empty else {}
+    switch_count = int((regime_1h["regime"] != regime_1h["regime"].shift(1)).sum() - 1) if len(regime_1h) else 0
 
     return {
         "rows_in": rows_in,
@@ -220,4 +277,6 @@ def run_detect_regime(
             R3: int(regime_counts.get(R3, 0)),
             R4: int(regime_counts.get(R4, 0)),
         },
+        "min_regime_run_bars": int(min_regime_run_bars),
+        "switch_count": switch_count,
     }

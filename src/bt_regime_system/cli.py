@@ -6,6 +6,8 @@ from typing import Optional
 import typer
 import yaml
 
+from bt_regime_system.backtest.engine import run_backtest
+from bt_regime_system.analysis.plots import run_plot_price_regime_1h
 from bt_regime_system.data.build_bars import run_build_bars
 from bt_regime_system.data.fetch_1m import fetch_1m_klines, write_monthly_raw_1m
 from bt_regime_system.data.qc_1m import run_qc_1m
@@ -43,13 +45,50 @@ def _config_regime(cfg: dict) -> tuple[dict, dict, dict]:
     output = regime.get("output", {}) if isinstance(regime.get("output"), dict) else {}
     return trend, volatility, output
 
-def _config_signals(cfg: dict) -> tuple[dict, dict, dict, dict]:
+
+def _config_regime_smoothing(cfg: dict) -> dict:
+    regime = cfg.get("regime", {}) if isinstance(cfg.get("regime"), dict) else {}
+    smoothing = regime.get("smoothing", {}) if isinstance(regime.get("smoothing"), dict) else {}
+    return smoothing
+
+def _config_signals(cfg: dict) -> tuple[dict, dict, dict, dict, dict]:
     signals = cfg.get("signals", {}) if isinstance(cfg.get("signals"), dict) else {}
     output = signals.get("output", {}) if isinstance(signals.get("output"), dict) else {}
     donchian = signals.get("donchian", {}) if isinstance(signals.get("donchian"), dict) else {}
     ema_adx = signals.get("ema_adx", {}) if isinstance(signals.get("ema_adx"), dict) else {}
     mean_reversion = signals.get("mean_reversion", {}) if isinstance(signals.get("mean_reversion"), dict) else {}
-    return output, donchian, ema_adx, mean_reversion
+    execution = signals.get("execution", {}) if isinstance(signals.get("execution"), dict) else {}
+    return output, donchian, ema_adx, mean_reversion, execution
+
+
+def _config_allocator(cfg: dict) -> dict:
+    allocator = cfg.get("allocator", {}) if isinstance(cfg.get("allocator"), dict) else {}
+    strategy_weights = allocator.get("strategy_weights", {}) if isinstance(allocator.get("strategy_weights"), dict) else {}
+    return strategy_weights
+
+
+def _coerce_bool(value: object, default: bool = False) -> bool:
+    if value is None:
+        return default
+    if isinstance(value, bool):
+        return value
+    if isinstance(value, (int, float)):
+        return bool(value)
+    if isinstance(value, str):
+        text = value.strip().lower()
+        if text in {"1", "true", "yes", "y", "on"}:
+            return True
+        if text in {"0", "false", "no", "n", "off"}:
+            return False
+    return default
+
+
+def _config_backtest(cfg: dict) -> tuple[dict, dict, dict]:
+    backtest = cfg.get("backtest", {}) if isinstance(cfg.get("backtest"), dict) else {}
+    output = backtest.get("output", {}) if isinstance(backtest.get("output"), dict) else {}
+    execution = backtest.get("execution", {}) if isinstance(backtest.get("execution"), dict) else {}
+    assumptions = backtest.get("assumptions", {}) if isinstance(backtest.get("assumptions"), dict) else {}
+    return output, execution, assumptions
 
 
 @app.command("fetch-1m")
@@ -185,16 +224,26 @@ def detect_regime_cmd(
     input_path: Optional[Path] = typer.Option(None, help="1h bars parquet folder or file"),
     output_dir: Optional[Path] = typer.Option(None, help="Regime 1h output folder"),
     symbol: Optional[str] = typer.Option(None, help="Trading symbol, defaults to config value"),
+    min_regime_run_bars: Optional[int] = typer.Option(
+        None,
+        help="Minimum consecutive 1h bars required to confirm a regime switch",
+    ),
     config: Path = typer.Option(Path("configs/default.yaml"), help="Default config path"),
 ) -> None:
     """Detect 1h regime labels (R1-R4) from 1h bars and write monthly outputs."""
     cfg = _read_yaml(config)
     cfg_data, cfg_paths = _config_data(cfg)
     trend_cfg, vol_cfg, out_cfg = _config_regime(cfg)
+    smoothing_cfg = _config_regime_smoothing(cfg)
 
     resolved_symbol = symbol or cfg_data.get("symbol") or "BTCUSDT"
     resolved_input_path = input_path or Path(cfg_paths.get("bars_1h", "data/bars_1h"))
     resolved_output_dir = output_dir or Path(out_cfg.get("dir_1h", "results/regime"))
+    resolved_min_regime_run_bars = int(
+        min_regime_run_bars
+        if min_regime_run_bars is not None
+        else smoothing_cfg.get("min_regime_run_bars", 1)
+    )
 
     summary = run_detect_regime(
         input_path=resolved_input_path,
@@ -208,12 +257,15 @@ def detect_regime_cmd(
         atr_window=int(vol_cfg.get("atr_window", 14)),
         vol_lookback=int(vol_cfg.get("quantile_lookback", 720)),
         high_vol_quantile=float(vol_cfg.get("high_vol_quantile", 0.75)),
+        min_regime_run_bars=resolved_min_regime_run_bars,
     )
 
     logger.info("Regime detect rows in: %d", summary["rows_in"])
     logger.info("Regime detect rows out: %d", summary["rows_out"])
     logger.info("Regime files written: %d", len(summary["files_written"]))
     logger.info("Regime counts: %s", summary["regime_counts"])
+    logger.info("Regime min_run_bars: %d", summary["min_regime_run_bars"])
+    logger.info("Regime switch_count: %d", summary["switch_count"])
 
 
 @app.command("align-regime")
@@ -302,6 +354,41 @@ def qc_regime_cmd(
     logger.info("Summary report: %s", r15["summary_path"])
 
 
+@app.command("plot-regime")
+def plot_regime_cmd(
+    bars_1h_path: Optional[Path] = typer.Option(None, help="1h bars parquet folder or file"),
+    regime_1h_path: Optional[Path] = typer.Option(None, help="Regime 1h parquet folder or file"),
+    output_path: Optional[Path] = typer.Option(None, help="Plot output file or folder"),
+    symbol: Optional[str] = typer.Option(None, help="Trading symbol, defaults to config value"),
+    default_regime: Optional[str] = typer.Option(None, help="Fallback regime when missing"),
+    config: Path = typer.Option(Path("configs/default.yaml"), help="Default config path"),
+) -> None:
+    """Plot 1h close price with regime background bands and save image."""
+    cfg = _read_yaml(config)
+    cfg_data, cfg_paths = _config_data(cfg)
+    _, _, out_cfg = _config_regime(cfg)
+
+    resolved_symbol = symbol or cfg_data.get("symbol") or "BTCUSDT"
+    resolved_bars_1h_path = bars_1h_path or Path(cfg_paths.get("bars_1h", "data/bars_1h"))
+    resolved_regime_1h_path = regime_1h_path or Path(out_cfg.get("dir_1h", "results/regime"))
+    resolved_output_path = output_path or Path(out_cfg.get("dir_plots", "results/regime/plots"))
+    resolved_default_regime = default_regime or str(out_cfg.get("default_regime_15m", "R4"))
+
+    summary = run_plot_price_regime_1h(
+        bars_1h_path=resolved_bars_1h_path,
+        regime_1h_path=resolved_regime_1h_path,
+        output_path=resolved_output_path,
+        symbol=resolved_symbol,
+        default_regime=resolved_default_regime,
+    )
+
+    logger.info("Plot rows bars_1h: %d", summary["rows_bars_1h"])
+    logger.info("Plot rows regime_1h: %d", summary["rows_regime_1h"])
+    logger.info("Plot rows rendered: %d", summary["rows_plot"])
+    logger.info("Plot output: %s", summary["output_path"])
+    logger.info("Plot range: %s -> %s", summary["start_timestamp"], summary["end_timestamp"])
+
+
 @app.command("generate-signals")
 def generate_signals_cmd(
     bars_15m_path: Optional[Path] = typer.Option(None, help="15m bars parquet folder or file"),
@@ -309,19 +396,33 @@ def generate_signals_cmd(
     output_dir: Optional[Path] = typer.Option(None, help="Signals 15m output folder"),
     symbol: Optional[str] = typer.Option(None, help="Trading symbol, defaults to config value"),
     default_regime: Optional[str] = typer.Option(None, help="Fallback regime for missing 15m labels"),
+    long_only: Optional[bool] = typer.Option(None, help="Enforce long-only target positions"),
+    min_hold_bars: Optional[int] = typer.Option(None, help="Minimum hold bars before changing position"),
+    rebalance_threshold: Optional[float] = typer.Option(None, help="Ignore small target_position changes below this threshold"),
     config: Path = typer.Option(Path("configs/default.yaml"), help="Default config path"),
 ) -> None:
     """Generate 15m strategy signals and composite target positions."""
     cfg = _read_yaml(config)
     cfg_data, cfg_paths = _config_data(cfg)
     _, _, regime_out_cfg = _config_regime(cfg)
-    signals_out_cfg, don_cfg, ema_cfg, mr_cfg = _config_signals(cfg)
+    signals_out_cfg, don_cfg, ema_cfg, mr_cfg, signals_exec_cfg = _config_signals(cfg)
+    allocator_cfg = _config_allocator(cfg)
 
     resolved_symbol = symbol or cfg_data.get("symbol") or "BTCUSDT"
     resolved_bars_15m_path = bars_15m_path or Path(cfg_paths.get("bars_15m", "data/bars_15m"))
     resolved_regime_15m_path = regime_15m_path or Path(regime_out_cfg.get("dir_15m", "results/regime"))
     resolved_output_dir = output_dir or Path(signals_out_cfg.get("dir_15m", cfg_paths.get("signals", "results/signals")))
     resolved_default_regime = default_regime or str(regime_out_cfg.get("default_regime_15m", "R4"))
+    venue = str(cfg_data.get("venue", "")).lower()
+    spot_default_long_only = venue.endswith("spot")
+    resolved_long_only = _coerce_bool(
+        long_only if long_only is not None else signals_exec_cfg.get("long_only"),
+        default=spot_default_long_only,
+    )
+    resolved_min_hold_bars = int(min_hold_bars if min_hold_bars is not None else signals_exec_cfg.get("min_hold_bars", 1))
+    resolved_rebalance_threshold = float(
+        rebalance_threshold if rebalance_threshold is not None else signals_exec_cfg.get("rebalance_threshold", 0.0)
+    )
 
     summary = run_generate_signals(
         bars_15m_path=resolved_bars_15m_path,
@@ -339,6 +440,10 @@ def generate_signals_cmd(
         mr_z_window=int(mr_cfg.get("z_window", 48)),
         mr_entry_z=float(mr_cfg.get("entry_z", 1.5)),
         mr_exit_z=float(mr_cfg.get("exit_z", 0.5)),
+        regime_allocations=allocator_cfg,
+        long_only=resolved_long_only,
+        min_hold_bars=resolved_min_hold_bars,
+        rebalance_threshold=resolved_rebalance_threshold,
     )
 
     logger.info("Generate signals rows bars_15m: %d", summary["rows_bars_15m"])
@@ -350,6 +455,92 @@ def generate_signals_cmd(
         summary["signal_composite_min"],
         summary["signal_composite_max"],
     )
+    logger.info(
+        "Execution constraints: long_only=%s min_hold_bars=%d rebalance_threshold=%.4f",
+        summary["long_only"],
+        summary["min_hold_bars"],
+        summary["rebalance_threshold"],
+    )
+
+
+@app.command("run-backtest")
+def run_backtest_cmd(
+    bars_15m_path: Optional[Path] = typer.Option(None, help="15m bars parquet folder or file"),
+    signals_15m_path: Optional[Path] = typer.Option(None, help="15m signals parquet folder or file"),
+    output_dir: Optional[Path] = typer.Option(None, help="Backtest output folder"),
+    metrics_dir: Optional[Path] = typer.Option(None, help="Backtest metrics output folder"),
+    symbol: Optional[str] = typer.Option(None, help="Trading symbol, defaults to config value"),
+    initial_equity: Optional[float] = typer.Option(None, help="Initial equity"),
+    fee_bps: Optional[float] = typer.Option(None, help="Per-turnover fee in bps"),
+    slippage_bps: Optional[float] = typer.Option(None, help="Per-turnover slippage in bps"),
+    position_lag_bars: Optional[int] = typer.Option(None, help="Bars to lag target_position for execution"),
+    bars_per_year: Optional[int] = typer.Option(None, help="Bars per year used for annualization"),
+    long_only: Optional[bool] = typer.Option(None, help="Enforce long-only positions in simulation"),
+    config: Path = typer.Option(Path("configs/default.yaml"), help="Default config path"),
+) -> None:
+    """Run 15m backtest from generated signals and write outputs + metrics."""
+    cfg = _read_yaml(config)
+    cfg_data, cfg_paths = _config_data(cfg)
+    _, _, _, _, signals_exec_cfg = _config_signals(cfg)
+    backtest_out_cfg, backtest_exec_cfg, backtest_assump_cfg = _config_backtest(cfg)
+
+    resolved_symbol = symbol or cfg_data.get("symbol") or "BTCUSDT"
+    resolved_bars_15m_path = bars_15m_path or Path(cfg_paths.get("bars_15m", "data/bars_15m"))
+    resolved_signals_15m_path = signals_15m_path or Path(cfg_paths.get("signals", "results/signals"))
+    resolved_output_dir = output_dir or Path(backtest_out_cfg.get("dir_backtest", cfg_paths.get("backtest", "results/backtest")))
+    resolved_metrics_dir = metrics_dir or Path(backtest_out_cfg.get("dir_metrics", cfg_paths.get("metrics", "results/metrics")))
+
+    resolved_initial_equity = float(initial_equity if initial_equity is not None else backtest_exec_cfg.get("initial_equity", 100000.0))
+    resolved_fee_bps = float(fee_bps if fee_bps is not None else backtest_exec_cfg.get("fee_bps", 4.0))
+    resolved_slippage_bps = float(slippage_bps if slippage_bps is not None else backtest_exec_cfg.get("slippage_bps", 1.0))
+    resolved_position_lag_bars = int(position_lag_bars if position_lag_bars is not None else backtest_assump_cfg.get("position_lag_bars", 1))
+    resolved_bars_per_year = int(bars_per_year if bars_per_year is not None else backtest_assump_cfg.get("bars_per_year_15m", 35040))
+    venue = str(cfg_data.get("venue", "")).lower()
+    spot_default_long_only = venue.endswith("spot")
+    cfg_long_only = backtest_exec_cfg.get("long_only", signals_exec_cfg.get("long_only"))
+    resolved_long_only = _coerce_bool(long_only if long_only is not None else cfg_long_only, default=spot_default_long_only)
+
+    summary = run_backtest(
+        bars_15m_path=resolved_bars_15m_path,
+        signals_15m_path=resolved_signals_15m_path,
+        output_dir=resolved_output_dir,
+        metrics_dir=resolved_metrics_dir,
+        symbol=resolved_symbol,
+        initial_equity=resolved_initial_equity,
+        fee_bps=resolved_fee_bps,
+        slippage_bps=resolved_slippage_bps,
+        position_lag_bars=resolved_position_lag_bars,
+        bars_per_year=resolved_bars_per_year,
+        long_only=resolved_long_only,
+    )
+
+    logger.info("Backtest rows bars_15m: %d", summary["rows_bars_15m"])
+    logger.info("Backtest rows signals_15m: %d", summary["rows_signals_15m"])
+    logger.info("Backtest rows out: %d", summary["rows_out"])
+    logger.info("Backtest files written: %d", len(summary["files_written"]))
+    logger.info("Metrics path: %s", summary["metrics_path"])
+    logger.info("Execution constraints: long_only=%s", summary.get("long_only"))
+
+    metrics = summary.get("metrics", {})
+    if metrics:
+        logger.info(
+            "Strategy total_return=%.6f sharpe=%.4f max_drawdown=%.6f",
+            float(metrics.get("total_return", 0.0)),
+            float(metrics.get("sharpe", 0.0)),
+            float(metrics.get("max_drawdown", 0.0)),
+        )
+        logger.info(
+            "BuyHold total_return=%.6f sharpe=%.4f max_drawdown=%.6f",
+            float(metrics.get("bh_total_return", 0.0)),
+            float(metrics.get("bh_sharpe", 0.0)),
+            float(metrics.get("bh_max_drawdown", 0.0)),
+        )
+        logger.info(
+            "Excess vs BuyHold total_return=%.6f sharpe=%.4f outperform=%s",
+            float(metrics.get("excess_total_return", 0.0)),
+            float(metrics.get("excess_sharpe", 0.0)),
+            bool(metrics.get("outperform_buy_hold", False)),
+        )
 
 
 if __name__ == "__main__":

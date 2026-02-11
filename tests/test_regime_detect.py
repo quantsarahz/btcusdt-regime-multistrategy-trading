@@ -1,8 +1,18 @@
 from __future__ import annotations
 
 import pandas as pd
+import pytest
 
-from bt_regime_system.regime.detect import R1, R2, R3, R4, classify_regime, detect_regime_1h, run_detect_regime
+from bt_regime_system.regime.detect import (
+    R1,
+    R2,
+    R3,
+    R4,
+    apply_min_regime_run_filter,
+    classify_regime,
+    detect_regime_1h,
+    run_detect_regime,
+)
 
 
 def _make_1h_bars(start: str, periods: int) -> pd.DataFrame:
@@ -28,6 +38,21 @@ def test_classify_regime_4_quadrants() -> None:
     out = classify_regime(is_trend, is_high_vol)
 
     assert out.tolist() == [R1, R2, R3, R4]
+
+
+def test_apply_min_regime_run_filter_three_bars() -> None:
+    regime = pd.Series([R1, R2, R1, R2, R2, R2, R1, R1, R1], dtype="string")
+
+    out = apply_min_regime_run_filter(regime, min_run_bars=3)
+
+    assert out.tolist() == [R1, R1, R1, R1, R1, R2, R2, R2, R1]
+
+
+def test_apply_min_regime_run_filter_invalid_min_run() -> None:
+    regime = pd.Series([R1, R2], dtype="string")
+
+    with pytest.raises(ValueError):
+        _ = apply_min_regime_run_filter(regime, min_run_bars=0)
 
 
 def test_detect_regime_1h_returns_expected_columns() -> None:

@@ -41,7 +41,7 @@ def _standardize_bars_15m(frame: pd.DataFrame) -> pd.DataFrame:
         out[col] = pd.to_numeric(out[col], errors="coerce")
 
     out = out.dropna(subset=["timestamp", "high", "low", "close"])
-    out = out.sort_values("timestamp").drop_duplicates("timestamp", keep="last")
+    out = out.sort_values("timestamp", kind="mergesort").drop_duplicates("timestamp", keep="last")
     return out.reset_index(drop=True)
 
 
@@ -59,7 +59,7 @@ def _standardize_regime_15m(frame: pd.DataFrame) -> pd.DataFrame:
     out["regime"] = out["regime"].astype("string")
 
     out = out.dropna(subset=["timestamp"])
-    out = out.sort_values("timestamp").drop_duplicates("timestamp", keep="last")
+    out = out.sort_values("timestamp", kind="mergesort").drop_duplicates("timestamp", keep="last")
     return out.reset_index(drop=True)
 
 
@@ -94,6 +94,49 @@ def _resolve_regime_for_bars(
     return merged["regime"].astype("string").fillna(default_regime)
 
 
+def _apply_execution_constraints(
+    target_position: pd.Series,
+    long_only: bool = False,
+    min_hold_bars: int = 1,
+    rebalance_threshold: float = 0.0,
+) -> pd.Series:
+    if min_hold_bars < 1:
+        raise ValueError("min_hold_bars must be >= 1")
+    if rebalance_threshold < 0:
+        raise ValueError("rebalance_threshold must be >= 0")
+
+    desired = pd.to_numeric(target_position, errors="coerce").fillna(0.0).clip(-1.0, 1.0).astype(float)
+    if long_only:
+        desired = desired.clip(lower=0.0)
+
+    if desired.empty:
+        return desired
+
+    out: list[float] = []
+    current = float(desired.iloc[0])
+    bars_since_change = min_hold_bars
+    out.append(current)
+
+    for value in desired.iloc[1:]:
+        proposed = float(value)
+
+        if abs(proposed - current) < rebalance_threshold:
+            proposed = current
+
+        if proposed != current and bars_since_change < min_hold_bars:
+            proposed = current
+
+        if proposed != current:
+            current = proposed
+            bars_since_change = 1
+        else:
+            bars_since_change += 1
+
+        out.append(current)
+
+    return pd.Series(out, index=desired.index, dtype="float64")
+
+
 def build_signals_15m(
     bars_15m: pd.DataFrame,
     regime_15m: pd.DataFrame,
@@ -108,6 +151,10 @@ def build_signals_15m(
     mr_z_window: int = 48,
     mr_entry_z: float = 1.5,
     mr_exit_z: float = 0.5,
+    regime_allocations: dict[str, dict[str, float]] | None = None,
+    long_only: bool = False,
+    min_hold_bars: int = 1,
+    rebalance_threshold: float = 0.0,
 ) -> pd.DataFrame:
     bars_std = _standardize_bars_15m(bars_15m)
     if bars_std.empty:
@@ -155,7 +202,11 @@ def build_signals_15m(
         default_regime=default_regime,
     )
 
-    alloc = build_allocation_table(pd.Series(regime_series.values, index=bars_std["timestamp"].values))
+    alloc = build_allocation_table(
+        pd.Series(regime_series.values, index=bars_std["timestamp"].values),
+        regime_allocations=regime_allocations,
+        default_regime=default_regime,
+    )
     alloc["timestamp"] = pd.to_datetime(alloc["timestamp"], utc=True)
 
     merged = merged.merge(
@@ -171,14 +222,20 @@ def build_signals_15m(
         + merged[EMA_ADX_COL] * merged["w_ema_adx"]
         + merged[MEAN_REV_COL] * merged["w_mean_reversion"]
     ).clip(-1.0, 1.0)
-    merged["target_position"] = merged["signal_composite"].clip(-1.0, 1.0)
+
+    merged["target_position"] = _apply_execution_constraints(
+        merged["signal_composite"],
+        long_only=long_only,
+        min_hold_bars=min_hold_bars,
+        rebalance_threshold=rebalance_threshold,
+    )
 
     out = merged[SIGNAL_COLUMNS].copy()
     out["timestamp"] = pd.to_datetime(out["timestamp"], utc=True)
     for col in [DONCHIAN_COL, EMA_ADX_COL, MEAN_REV_COL, "signal_composite", "target_position"]:
         out[col] = pd.to_numeric(out[col], errors="coerce").fillna(0.0).astype(float)
 
-    return out.sort_values("timestamp").reset_index(drop=True)
+    return out.sort_values("timestamp", kind="mergesort").reset_index(drop=True)
 
 
 def monthly_signals_filename(symbol: str, month: str) -> str:
@@ -199,7 +256,7 @@ def _standardize_signals_frame(frame: pd.DataFrame) -> pd.DataFrame:
         out[col] = pd.to_numeric(out[col], errors="coerce")
 
     out = out.dropna(subset=["timestamp"])
-    out = out.sort_values("timestamp").drop_duplicates("timestamp", keep="last")
+    out = out.sort_values("timestamp", kind="mergesort").drop_duplicates("timestamp", keep="last")
 
     for col in [DONCHIAN_COL, EMA_ADX_COL, MEAN_REV_COL, "signal_composite", "target_position"]:
         out[col] = out[col].fillna(0.0).astype(float)
@@ -228,7 +285,7 @@ def write_monthly_signals(
             existing = pd.read_parquet(target)
             existing = _standardize_signals_frame(existing)
             merged = pd.concat([existing, new_rows], ignore_index=True)
-            merged = merged.sort_values("timestamp").drop_duplicates("timestamp", keep="last")
+            merged = merged.sort_values("timestamp", kind="mergesort").drop_duplicates("timestamp", keep="last")
         else:
             merged = new_rows.drop_duplicates("timestamp", keep="last")
 
@@ -254,6 +311,10 @@ def run_generate_signals(
     mr_z_window: int = 48,
     mr_entry_z: float = 1.5,
     mr_exit_z: float = 0.5,
+    regime_allocations: dict[str, dict[str, float]] | None = None,
+    long_only: bool = False,
+    min_hold_bars: int = 1,
+    rebalance_threshold: float = 0.0,
 ) -> dict[str, Any]:
     bars_files = _collect_files(bars_15m_path, f"{symbol.upper()}_15m_*.parquet")
     regime_files = _collect_files(regime_15m_path, f"{symbol.upper()}_regime_15m_*.parquet")
@@ -264,6 +325,9 @@ def run_generate_signals(
             "rows_regime_15m": 0,
             "rows_out": 0,
             "files_written": [],
+            "long_only": bool(long_only),
+            "min_hold_bars": int(min_hold_bars),
+            "rebalance_threshold": float(rebalance_threshold),
         }
 
     bars_frames: list[pd.DataFrame] = []
@@ -296,6 +360,10 @@ def run_generate_signals(
         mr_z_window=mr_z_window,
         mr_entry_z=mr_entry_z,
         mr_exit_z=mr_exit_z,
+        regime_allocations=regime_allocations,
+        long_only=long_only,
+        min_hold_bars=min_hold_bars,
+        rebalance_threshold=rebalance_threshold,
     )
 
     files_written = write_monthly_signals(
@@ -311,4 +379,8 @@ def run_generate_signals(
         "files_written": files_written,
         "signal_composite_min": float(signals_15m["signal_composite"].min()) if not signals_15m.empty else 0.0,
         "signal_composite_max": float(signals_15m["signal_composite"].max()) if not signals_15m.empty else 0.0,
+        "target_position_abs_mean": float(signals_15m["target_position"].abs().mean()) if not signals_15m.empty else 0.0,
+        "long_only": bool(long_only),
+        "min_hold_bars": int(min_hold_bars),
+        "rebalance_threshold": float(rebalance_threshold),
     }
