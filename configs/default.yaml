@@ -15,6 +15,7 @@ data:
     bars_15m: data/bars_15m
     bars_1h: data/bars_1h
     reports: data/reports
+    signals: results/signals
 
   storage:
     format: parquet
@@ -99,3 +100,24 @@ allocator:
       donchian: 0.0
       ema_adx: 0.0
       mean_reversion: 0.0
+
+
+signals:
+  output:
+    dir_15m: results/signals
+
+  donchian:
+    window: 20
+    hold_until_opposite: true
+
+  ema_adx:
+    ema_fast: 21
+    ema_slow: 55
+    adx_window: 14
+    adx_threshold: 20.0
+    use_adx_filter: true
+
+  mean_reversion:
+    z_window: 48
+    entry_z: 1.5
+    exit_z: 0.5

@@ -13,6 +13,7 @@ from bt_regime_system.data.qc_bars import run_qc_bars
 from bt_regime_system.regime.align import run_align_regime
 from bt_regime_system.regime.detect import run_detect_regime
 from bt_regime_system.regime.qc import run_qc_regime
+from bt_regime_system.signals.build import run_generate_signals
 from bt_regime_system.utils.logging import get_logger
 
 app = typer.Typer(help="BTCUSDT regime trading system CLI")
@@ -41,6 +42,14 @@ def _config_regime(cfg: dict) -> tuple[dict, dict, dict]:
     volatility = regime.get("volatility", {}) if isinstance(regime.get("volatility"), dict) else {}
     output = regime.get("output", {}) if isinstance(regime.get("output"), dict) else {}
     return trend, volatility, output
+
+def _config_signals(cfg: dict) -> tuple[dict, dict, dict, dict]:
+    signals = cfg.get("signals", {}) if isinstance(cfg.get("signals"), dict) else {}
+    output = signals.get("output", {}) if isinstance(signals.get("output"), dict) else {}
+    donchian = signals.get("donchian", {}) if isinstance(signals.get("donchian"), dict) else {}
+    ema_adx = signals.get("ema_adx", {}) if isinstance(signals.get("ema_adx"), dict) else {}
+    mean_reversion = signals.get("mean_reversion", {}) if isinstance(signals.get("mean_reversion"), dict) else {}
+    return output, donchian, ema_adx, mean_reversion
 
 
 @app.command("fetch-1m")
@@ -291,6 +300,56 @@ def qc_regime_cmd(
         r15["summary"]["regime_mismatch_count"],
     )
     logger.info("Summary report: %s", r15["summary_path"])
+
+
+@app.command("generate-signals")
+def generate_signals_cmd(
+    bars_15m_path: Optional[Path] = typer.Option(None, help="15m bars parquet folder or file"),
+    regime_15m_path: Optional[Path] = typer.Option(None, help="15m regime parquet folder or file"),
+    output_dir: Optional[Path] = typer.Option(None, help="Signals 15m output folder"),
+    symbol: Optional[str] = typer.Option(None, help="Trading symbol, defaults to config value"),
+    default_regime: Optional[str] = typer.Option(None, help="Fallback regime for missing 15m labels"),
+    config: Path = typer.Option(Path("configs/default.yaml"), help="Default config path"),
+) -> None:
+    """Generate 15m strategy signals and composite target positions."""
+    cfg = _read_yaml(config)
+    cfg_data, cfg_paths = _config_data(cfg)
+    _, _, regime_out_cfg = _config_regime(cfg)
+    signals_out_cfg, don_cfg, ema_cfg, mr_cfg = _config_signals(cfg)
+
+    resolved_symbol = symbol or cfg_data.get("symbol") or "BTCUSDT"
+    resolved_bars_15m_path = bars_15m_path or Path(cfg_paths.get("bars_15m", "data/bars_15m"))
+    resolved_regime_15m_path = regime_15m_path or Path(regime_out_cfg.get("dir_15m", "results/regime"))
+    resolved_output_dir = output_dir or Path(signals_out_cfg.get("dir_15m", cfg_paths.get("signals", "results/signals")))
+    resolved_default_regime = default_regime or str(regime_out_cfg.get("default_regime_15m", "R4"))
+
+    summary = run_generate_signals(
+        bars_15m_path=resolved_bars_15m_path,
+        regime_15m_path=resolved_regime_15m_path,
+        output_dir=resolved_output_dir,
+        symbol=resolved_symbol,
+        default_regime=resolved_default_regime,
+        donchian_window=int(don_cfg.get("window", 20)),
+        donchian_hold_until_opposite=bool(don_cfg.get("hold_until_opposite", True)),
+        ema_fast=int(ema_cfg.get("ema_fast", 21)),
+        ema_slow=int(ema_cfg.get("ema_slow", 55)),
+        ema_adx_window=int(ema_cfg.get("adx_window", 14)),
+        ema_adx_threshold=float(ema_cfg.get("adx_threshold", 20.0)),
+        ema_use_adx_filter=bool(ema_cfg.get("use_adx_filter", True)),
+        mr_z_window=int(mr_cfg.get("z_window", 48)),
+        mr_entry_z=float(mr_cfg.get("entry_z", 1.5)),
+        mr_exit_z=float(mr_cfg.get("exit_z", 0.5)),
+    )
+
+    logger.info("Generate signals rows bars_15m: %d", summary["rows_bars_15m"])
+    logger.info("Generate signals rows regime_15m: %d", summary["rows_regime_15m"])
+    logger.info("Generate signals rows out: %d", summary["rows_out"])
+    logger.info("Generate signals files written: %d", len(summary["files_written"]))
+    logger.info(
+        "Composite signal range: [%.4f, %.4f]",
+        summary["signal_composite_min"],
+        summary["signal_composite_max"],
+    )
 
 
 if __name__ == "__main__":
