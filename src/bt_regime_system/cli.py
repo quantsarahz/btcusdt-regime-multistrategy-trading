@@ -6,7 +6,9 @@ from typing import Optional
 import typer
 import yaml
 
+from bt_regime_system.backtest.diagnostics import run_backtest_diagnostics
 from bt_regime_system.backtest.engine import run_backtest
+from bt_regime_system.backtest.walk_forward import run_walk_forward
 from bt_regime_system.analysis.plots import run_plot_price_regime_1h
 from bt_regime_system.data.build_bars import run_build_bars
 from bt_regime_system.data.fetch_1m import fetch_1m_klines, write_monthly_raw_1m
@@ -89,6 +91,12 @@ def _config_backtest(cfg: dict) -> tuple[dict, dict, dict]:
     execution = backtest.get("execution", {}) if isinstance(backtest.get("execution"), dict) else {}
     assumptions = backtest.get("assumptions", {}) if isinstance(backtest.get("assumptions"), dict) else {}
     return output, execution, assumptions
+
+
+def _config_walk_forward(cfg: dict) -> dict:
+    backtest = cfg.get("backtest", {}) if isinstance(cfg.get("backtest"), dict) else {}
+    wf = backtest.get("walk_forward", {}) if isinstance(backtest.get("walk_forward"), dict) else {}
+    return wf
 
 
 @app.command("fetch-1m")
@@ -541,6 +549,138 @@ def run_backtest_cmd(
             float(metrics.get("excess_sharpe", 0.0)),
             bool(metrics.get("outperform_buy_hold", False)),
         )
+
+
+@app.command("diagnose-backtest")
+def diagnose_backtest_cmd(
+    backtest_path: Optional[Path] = typer.Option(None, help="Backtest parquet folder or file"),
+    signals_15m_path: Optional[Path] = typer.Option(None, help="15m signals parquet folder or file"),
+    regime_15m_path: Optional[Path] = typer.Option(None, help="15m regime parquet folder or file"),
+    output_dir: Optional[Path] = typer.Option(None, help="Diagnostics output folder"),
+    symbol: Optional[str] = typer.Option(None, help="Trading symbol, defaults to config value"),
+    default_regime: Optional[str] = typer.Option(None, help="Fallback regime for missing labels"),
+    bars_per_year: Optional[int] = typer.Option(None, help="Bars per year used for annualization"),
+    position_lag_bars: Optional[int] = typer.Option(None, help="Execution lag used for contribution alignment"),
+    config: Path = typer.Option(Path("configs/default.yaml"), help="Default config path"),
+) -> None:
+    """Run backtest attribution diagnostics (regime, strategy contribution, cost)."""
+    cfg = _read_yaml(config)
+    cfg_data, cfg_paths = _config_data(cfg)
+    _, _, regime_out_cfg = _config_regime(cfg)
+    allocator_cfg = _config_allocator(cfg)
+    backtest_out_cfg, _, backtest_assump_cfg = _config_backtest(cfg)
+
+    resolved_symbol = symbol or cfg_data.get("symbol") or "BTCUSDT"
+    resolved_backtest_path = backtest_path or Path(backtest_out_cfg.get("dir_backtest", cfg_paths.get("backtest", "results/backtest")))
+    resolved_signals_path = signals_15m_path or Path(cfg_paths.get("signals", "results/signals"))
+    resolved_regime_path = regime_15m_path or Path(regime_out_cfg.get("dir_15m", "results/regime"))
+    resolved_output_dir = output_dir or Path(backtest_out_cfg.get("dir_metrics", cfg_paths.get("metrics", "results/metrics")))
+    resolved_default_regime = default_regime or str(regime_out_cfg.get("default_regime_15m", "R4"))
+    resolved_bars_per_year = int(bars_per_year if bars_per_year is not None else backtest_assump_cfg.get("bars_per_year_15m", 35040))
+    resolved_position_lag_bars = int(position_lag_bars if position_lag_bars is not None else backtest_assump_cfg.get("position_lag_bars", 1))
+
+    summary = run_backtest_diagnostics(
+        backtest_path=resolved_backtest_path,
+        signals_path=resolved_signals_path,
+        regime_15m_path=resolved_regime_path,
+        output_dir=resolved_output_dir,
+        symbol=resolved_symbol,
+        bars_per_year=resolved_bars_per_year,
+        position_lag_bars=resolved_position_lag_bars,
+        default_regime=resolved_default_regime,
+        regime_allocations=allocator_cfg,
+    )
+
+    logger.info("Diagnostics rows backtest: %d", summary["rows_backtest"])
+    logger.info("Diagnostics rows signals: %d", summary["rows_signals"])
+    logger.info("Diagnostics rows regime: %d", summary["rows_regime"])
+    logger.info("Diagnostics rows joined: %d", summary["rows_joined"])
+    logger.info("Diagnostics files written: %d", len(summary["files_written"]))
+    logger.info("Diagnostics summary path: %s", summary["summary_path"])
+
+
+@app.command("walk-forward")
+def walk_forward_cmd(
+    bars_15m_path: Optional[Path] = typer.Option(None, help="15m bars parquet folder or file"),
+    regime_15m_path: Optional[Path] = typer.Option(None, help="15m regime parquet folder or file"),
+    output_dir: Optional[Path] = typer.Option(None, help="Walk-forward output folder"),
+    symbol: Optional[str] = typer.Option(None, help="Trading symbol, defaults to config value"),
+    selection_metric: Optional[str] = typer.Option(None, help="Selection metric: sharpe/total_return/annual_return/calmar"),
+    default_regime: Optional[str] = typer.Option(None, help="Fallback regime for missing labels"),
+    config: Path = typer.Option(Path("configs/default.yaml"), help="Default config path"),
+) -> None:
+    """Run rolling walk-forward validation with valid-if-provided, else train selection."""
+    cfg = _read_yaml(config)
+    cfg_data, cfg_paths = _config_data(cfg)
+    _, _, regime_out_cfg = _config_regime(cfg)
+    signals_out_cfg, don_cfg, ema_cfg, mr_cfg, signals_exec_cfg = _config_signals(cfg)
+    allocator_cfg = _config_allocator(cfg)
+    backtest_out_cfg, backtest_exec_cfg, backtest_assump_cfg = _config_backtest(cfg)
+    walk_cfg = _config_walk_forward(cfg)
+
+    resolved_symbol = symbol or cfg_data.get("symbol") or "BTCUSDT"
+    resolved_bars_15m_path = bars_15m_path or Path(cfg_paths.get("bars_15m", "data/bars_15m"))
+    resolved_regime_15m_path = regime_15m_path or Path(regime_out_cfg.get("dir_15m", "results/regime"))
+    resolved_output_dir = output_dir or Path(walk_cfg.get("output_dir", backtest_out_cfg.get("dir_metrics", cfg_paths.get("metrics", "results/metrics"))))
+    resolved_default_regime = default_regime or str(regime_out_cfg.get("default_regime_15m", "R4"))
+    resolved_selection_metric = str(selection_metric or walk_cfg.get("selection_metric", "sharpe"))
+
+    venue = str(cfg_data.get("venue", "")).lower()
+    spot_default_long_only = venue.endswith("spot")
+    cfg_long_only = backtest_exec_cfg.get("long_only", signals_exec_cfg.get("long_only"))
+    resolved_long_only = _coerce_bool(cfg_long_only, default=spot_default_long_only)
+
+    resolved_initial_equity = float(backtest_exec_cfg.get("initial_equity", 100000.0))
+    resolved_fee_bps = float(backtest_exec_cfg.get("fee_bps", 4.0))
+    resolved_slippage_bps = float(backtest_exec_cfg.get("slippage_bps", 1.0))
+    resolved_position_lag_bars = int(backtest_assump_cfg.get("position_lag_bars", 1))
+    resolved_bars_per_year = int(backtest_assump_cfg.get("bars_per_year_15m", 35040))
+
+    resolved_min_hold_bars = int(signals_exec_cfg.get("min_hold_bars", 1))
+    resolved_rebalance_threshold = float(signals_exec_cfg.get("rebalance_threshold", 0.0))
+
+    summary = run_walk_forward(
+        bars_15m_path=resolved_bars_15m_path,
+        regime_15m_path=resolved_regime_15m_path,
+        output_dir=resolved_output_dir,
+        symbol=resolved_symbol,
+        base_regime_allocations=allocator_cfg,
+        candidate_allocations=walk_cfg.get("candidates"),
+        folds=walk_cfg.get("folds"),
+        selection_metric=resolved_selection_metric,
+        default_regime=resolved_default_regime,
+        bars_per_year=resolved_bars_per_year,
+        initial_equity=resolved_initial_equity,
+        fee_bps=resolved_fee_bps,
+        slippage_bps=resolved_slippage_bps,
+        position_lag_bars=resolved_position_lag_bars,
+        long_only=resolved_long_only,
+        min_hold_bars=resolved_min_hold_bars,
+        rebalance_threshold=resolved_rebalance_threshold,
+        donchian_window=int(don_cfg.get("window", 20)),
+        donchian_hold_until_opposite=bool(don_cfg.get("hold_until_opposite", True)),
+        ema_fast=int(ema_cfg.get("ema_fast", 21)),
+        ema_slow=int(ema_cfg.get("ema_slow", 55)),
+        ema_adx_window=int(ema_cfg.get("adx_window", 14)),
+        ema_adx_threshold=float(ema_cfg.get("adx_threshold", 20.0)),
+        ema_use_adx_filter=bool(ema_cfg.get("use_adx_filter", True)),
+        mr_z_window=int(mr_cfg.get("z_window", 48)),
+        mr_entry_z=float(mr_cfg.get("entry_z", 1.5)),
+        mr_exit_z=float(mr_cfg.get("exit_z", 0.5)),
+    )
+
+    logger.info("Walk-forward rows bars: %d", summary["rows_bars"])
+    logger.info("Walk-forward rows regime: %d", summary["rows_regime"])
+    logger.info("Walk-forward candidate count: %d", summary["candidate_count"])
+    logger.info("Walk-forward fold count: %d", summary["fold_count"])
+    logger.info("Walk-forward selected candidates: %s", summary["selected_candidate_count"])
+    logger.info(
+        "Walk-forward OOS total_return=%.6f sharpe=%.4f vs BH total_return=%.6f",
+        float(summary["oos_metrics"].get("total_return", 0.0)),
+        float(summary["oos_metrics"].get("sharpe", 0.0)),
+        float(summary["oos_metrics"].get("bh_total_return", 0.0)),
+    )
+    logger.info("Walk-forward summary path: %s", summary["summary_path"])
 
 
 if __name__ == "__main__":

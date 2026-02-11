@@ -148,3 +148,45 @@ backtest:
   assumptions:
     position_lag_bars: 1
     bars_per_year_15m: 35040
+
+  walk_forward:
+    selection_metric: sharpe
+    output_dir: results/metrics
+    folds:
+      - name: wf_train_2022_valid_2023_test_2024
+        train_start: "2022-01-01T00:00:00Z"
+        train_end: "2022-12-31T23:59:59Z"
+        valid_start: "2023-01-01T00:00:00Z"
+        valid_end: "2023-12-31T23:59:59Z"
+        test_start: "2024-01-01T00:00:00Z"
+        test_end: "2024-12-31T23:59:59Z"
+      - name: wf_train_2022_2023_valid_2024_test_2025
+        train_start: "2022-01-01T00:00:00Z"
+        train_end: "2023-12-31T23:59:59Z"
+        valid_start: "2024-01-01T00:00:00Z"
+        valid_end: "2024-12-31T23:59:59Z"
+        test_start: "2025-01-01T00:00:00Z"
+        test_end: "2025-12-31T23:59:59Z"
+    candidates:
+      current: {}
+      r1_55_45:
+        R1:
+          donchian: 0.55
+          ema_adx: 0.45
+          mean_reversion: 0.0
+      r2_50_30:
+        R2:
+          donchian: 0.50
+          ema_adx: 0.30
+          mean_reversion: 0.0
+      r2_30_50:
+        R2:
+          donchian: 0.30
+          ema_adx: 0.50
+          mean_reversion: 0.0
+      r3_80pct:
+        R3:
+          donchian: 0.0
+          ema_adx: 0.0
+          mean_reversion: 0.8
+
