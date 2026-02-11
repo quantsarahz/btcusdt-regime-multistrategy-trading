@@ -12,6 +12,7 @@ from bt_regime_system.data.qc_1m import run_qc_1m
 from bt_regime_system.data.qc_bars import run_qc_bars
 from bt_regime_system.regime.align import run_align_regime
 from bt_regime_system.regime.detect import run_detect_regime
+from bt_regime_system.regime.qc import run_qc_regime
 from bt_regime_system.utils.logging import get_logger
 
 app = typer.Typer(help="BTCUSDT regime trading system CLI")
@@ -238,6 +239,58 @@ def align_regime_cmd(
     logger.info("Align regime rows 15m bars: %d", summary["rows_bars_15m"])
     logger.info("Align regime rows out: %d", summary["rows_aligned"])
     logger.info("Aligned regime files written: %d", len(summary["files_written"]))
+
+
+@app.command("qc-regime")
+def qc_regime_cmd(
+    regime_1h_path: Optional[Path] = typer.Option(None, help="Regime 1h parquet folder or file"),
+    regime_15m_path: Optional[Path] = typer.Option(None, help="Regime 15m parquet folder or file"),
+    report_dir: Optional[Path] = typer.Option(None, help="Regime QC report output folder"),
+    symbol: Optional[str] = typer.Option(None, help="Trading symbol, defaults to config value"),
+    default_regime: Optional[str] = typer.Option(None, help="Fallback regime expected before first 1h label"),
+    config: Path = typer.Option(Path("configs/default.yaml"), help="Default config path"),
+) -> None:
+    """Run regime QC checks and write monthly + summary reports."""
+    cfg = _read_yaml(config)
+    cfg_data, cfg_paths = _config_data(cfg)
+    _, _, out_cfg = _config_regime(cfg)
+
+    resolved_symbol = symbol or cfg_data.get("symbol") or "BTCUSDT"
+    resolved_regime_1h_path = regime_1h_path or Path(out_cfg.get("dir_1h", "results/regime"))
+    resolved_regime_15m_path = regime_15m_path or Path(out_cfg.get("dir_15m", "results/regime"))
+    resolved_report_dir = report_dir or Path(cfg_paths.get("reports", "data/reports"))
+    resolved_default_regime = default_regime or str(out_cfg.get("default_regime_15m", "R4"))
+
+    result = run_qc_regime(
+        regime_1h_path=resolved_regime_1h_path,
+        regime_15m_path=resolved_regime_15m_path,
+        report_dir=resolved_report_dir,
+        symbol=resolved_symbol,
+        default_regime=resolved_default_regime,
+    )
+
+    r1 = result["regime_1h"]
+    r15 = result["regime_15m"]
+
+    logger.info(
+        "QC regime 1h: files=%d rows=%d global_dup=%d global_missing=%d",
+        r1["summary"]["files_processed"],
+        r1["summary"]["row_count"],
+        r1["summary"]["global_duplicate_timestamp_count"],
+        r1["summary"]["global_missing_timestamp_count"],
+    )
+    logger.info("Summary report: %s", r1["summary_path"])
+
+    logger.info(
+        "QC regime 15m: files=%d rows=%d global_dup=%d global_missing=%d lookahead=%d mismatch=%d",
+        r15["summary"]["files_processed"],
+        r15["summary"]["row_count"],
+        r15["summary"]["global_duplicate_timestamp_count"],
+        r15["summary"]["global_missing_timestamp_count"],
+        r15["summary"]["lookahead_violation_count"],
+        r15["summary"]["regime_mismatch_count"],
+    )
+    logger.info("Summary report: %s", r15["summary_path"])
 
 
 if __name__ == "__main__":
