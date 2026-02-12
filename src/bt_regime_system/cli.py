@@ -8,6 +8,7 @@ import yaml
 
 from bt_regime_system.backtest.diagnostics import run_backtest_diagnostics
 from bt_regime_system.backtest.engine import run_backtest
+from bt_regime_system.backtest.stress import run_backtest_stress
 from bt_regime_system.backtest.walk_forward import run_walk_forward
 from bt_regime_system.analysis.plots import run_plot_price_regime_1h
 from bt_regime_system.data.build_bars import run_build_bars
@@ -97,6 +98,12 @@ def _config_walk_forward(cfg: dict) -> dict:
     backtest = cfg.get("backtest", {}) if isinstance(cfg.get("backtest"), dict) else {}
     wf = backtest.get("walk_forward", {}) if isinstance(backtest.get("walk_forward"), dict) else {}
     return wf
+
+
+def _config_stress_test(cfg: dict) -> dict:
+    backtest = cfg.get("backtest", {}) if isinstance(cfg.get("backtest"), dict) else {}
+    stress = backtest.get("stress_test", {}) if isinstance(backtest.get("stress_test"), dict) else {}
+    return stress
 
 
 @app.command("fetch-1m")
@@ -549,6 +556,100 @@ def run_backtest_cmd(
             float(metrics.get("excess_sharpe", 0.0)),
             bool(metrics.get("outperform_buy_hold", False)),
         )
+
+
+@app.command("stress-backtest")
+def stress_backtest_cmd(
+    bars_15m_path: Optional[Path] = typer.Option(None, help="15m bars parquet folder or file"),
+    signals_15m_path: Optional[Path] = typer.Option(None, help="15m signals parquet folder or file"),
+    output_dir: Optional[Path] = typer.Option(None, help="Stress test output folder"),
+    symbol: Optional[str] = typer.Option(None, help="Trading symbol, defaults to config value"),
+    config: Path = typer.Option(Path("configs/default.yaml"), help="Default config path"),
+) -> None:
+    """Run robustness stress tests for fee/slippage/lag/extreme volatility."""
+    cfg = _read_yaml(config)
+    cfg_data, cfg_paths = _config_data(cfg)
+    _, _, _, _, signals_exec_cfg = _config_signals(cfg)
+    backtest_out_cfg, backtest_exec_cfg, backtest_assump_cfg = _config_backtest(cfg)
+    stress_cfg = _config_stress_test(cfg)
+
+    resolved_symbol = symbol or cfg_data.get("symbol") or "BTCUSDT"
+    resolved_bars_15m_path = bars_15m_path or Path(cfg_paths.get("bars_15m", "data/bars_15m"))
+    resolved_signals_15m_path = signals_15m_path or Path(cfg_paths.get("signals", "results/signals"))
+    resolved_output_dir = output_dir or Path(stress_cfg.get("output_dir", backtest_out_cfg.get("dir_metrics", cfg_paths.get("metrics", "results/metrics"))))
+
+    resolved_initial_equity = float(backtest_exec_cfg.get("initial_equity", 100000.0))
+    resolved_fee_bps = float(backtest_exec_cfg.get("fee_bps", 4.0))
+    resolved_slippage_bps = float(backtest_exec_cfg.get("slippage_bps", 1.0))
+    resolved_position_lag_bars = int(backtest_assump_cfg.get("position_lag_bars", 1))
+    resolved_bars_per_year = int(backtest_assump_cfg.get("bars_per_year_15m", 35040))
+
+    venue = str(cfg_data.get("venue", "")).lower()
+    spot_default_long_only = venue.endswith("spot")
+    cfg_long_only = backtest_exec_cfg.get("long_only", signals_exec_cfg.get("long_only"))
+    resolved_long_only = _coerce_bool(cfg_long_only, default=spot_default_long_only)
+
+    raw_fee_values = stress_cfg.get("fee_bps_values")
+    raw_slip_values = stress_cfg.get("slippage_bps_values")
+    raw_lag_values = stress_cfg.get("position_lag_bars_values")
+    raw_vol_values = stress_cfg.get("volatility_multipliers")
+
+    resolved_fee_values = [float(v) for v in raw_fee_values] if isinstance(raw_fee_values, list) and raw_fee_values else [resolved_fee_bps, resolved_fee_bps * 2.0, resolved_fee_bps * 3.0]
+    resolved_slip_values = [float(v) for v in raw_slip_values] if isinstance(raw_slip_values, list) and raw_slip_values else [resolved_slippage_bps, resolved_slippage_bps * 2.0, resolved_slippage_bps * 4.0]
+    resolved_lag_values = [int(v) for v in raw_lag_values] if isinstance(raw_lag_values, list) and raw_lag_values else [resolved_position_lag_bars, resolved_position_lag_bars + 1, resolved_position_lag_bars + 2]
+    resolved_vol_values = [float(v) for v in raw_vol_values] if isinstance(raw_vol_values, list) and raw_vol_values else [1.0, 1.5, 2.0]
+
+    if any(v < 0 for v in resolved_fee_values):
+        raise ValueError("stress_test.fee_bps_values must be non-negative")
+    if any(v < 0 for v in resolved_slip_values):
+        raise ValueError("stress_test.slippage_bps_values must be non-negative")
+    if any(v < 0 for v in resolved_lag_values):
+        raise ValueError("stress_test.position_lag_bars_values must be non-negative")
+    if any(v <= 0 for v in resolved_vol_values):
+        raise ValueError("stress_test.volatility_multipliers must be > 0")
+
+    include_combined_worst_case = _coerce_bool(stress_cfg.get("include_combined_worst_case"), default=True)
+
+    summary = run_backtest_stress(
+        bars_15m_path=resolved_bars_15m_path,
+        signals_15m_path=resolved_signals_15m_path,
+        output_dir=resolved_output_dir,
+        symbol=resolved_symbol,
+        initial_equity=resolved_initial_equity,
+        fee_bps=resolved_fee_bps,
+        slippage_bps=resolved_slippage_bps,
+        position_lag_bars=resolved_position_lag_bars,
+        bars_per_year=resolved_bars_per_year,
+        long_only=resolved_long_only,
+        fee_bps_values=resolved_fee_values,
+        slippage_bps_values=resolved_slip_values,
+        lag_values=resolved_lag_values,
+        volatility_multipliers=resolved_vol_values,
+        include_combined_worst_case=include_combined_worst_case,
+    )
+
+    logger.info("Stress rows bars_15m: %d", summary["rows_bars_15m"])
+    logger.info("Stress rows signals_15m: %d", summary["rows_signals_15m"])
+    logger.info("Stress scenario count: %d", summary["scenario_count"])
+    logger.info("Stress results path: %s", summary.get("results_path"))
+    logger.info("Stress summary path: %s", summary.get("summary_path"))
+
+    baseline_metrics = summary.get("baseline_metrics", {})
+    if baseline_metrics:
+        logger.info(
+            "Stress baseline total_return=%.6f sharpe=%.4f max_drawdown=%.6f vs BH total_return=%.6f",
+            float(baseline_metrics.get("total_return", 0.0)),
+            float(baseline_metrics.get("sharpe", 0.0)),
+            float(baseline_metrics.get("max_drawdown", 0.0)),
+            float(baseline_metrics.get("bh_total_return", 0.0)),
+        )
+
+    extremes = summary.get("extremes", {})
+    if extremes:
+        logger.info("Stress worst total_return scenario: %s", extremes.get("worst_total_return_scenario"))
+        logger.info("Stress worst drawdown scenario: %s", extremes.get("worst_drawdown_scenario"))
+        logger.info("Stress best sharpe scenario: %s", extremes.get("best_sharpe_scenario"))
+
 
 
 @app.command("diagnose-backtest")

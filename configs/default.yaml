@@ -149,6 +149,14 @@ backtest:
     position_lag_bars: 1
     bars_per_year_15m: 35040
 
+  stress_test:
+    output_dir: results/metrics
+    fee_bps_values: [4.0, 8.0, 12.0]
+    slippage_bps_values: [1.0, 2.0, 4.0]
+    position_lag_bars_values: [1, 2, 3]
+    volatility_multipliers: [1.0, 1.5, 2.0]
+    include_combined_worst_case: true
+
   walk_forward:
     selection_metric: sharpe
     output_dir: results/metrics
